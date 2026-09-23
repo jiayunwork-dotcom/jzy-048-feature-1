@@ -1,7 +1,8 @@
 'use strict';
 
-const { WGS84, UTM } = require('./constants');
-const { meridianArc, footpointLatitude, M1 } = require('./meridian');
+const { UTM } = require('./constants');
+const { DEFAULT_ELLIPSOID } = require('./ellipsoids');
+const { footpointLatitude } = require('./meridian');
 
 /**
  * 横轴墨卡托投影 —— 反算（平面坐标 → 大地经纬度）。
@@ -15,13 +16,13 @@ const { meridianArc, footpointLatitude, M1 } = require('./meridian');
  *   式 (8-18)  反算经差，保留到 D^5
  *
  * 与 tmForward.js 的式 (8-13)/(8-14) 正算级数互为反函数，
- * 在 6° 带内互逆误差为亚毫米级（见 test/04-roundtrip.test.js）。
+ * 在 6° 带内互逆误差为亚毫米级。正反两支必须使用同一个椭球派生量
+ * ell，往返闭合才成立；缺省 ell 时使用 WGS84，与改造前逐位一致。
  *
  * 角度一律使用弧度；输入为“去掉假偏移、除以 k0 之前的原始平面量”
  * 由本模块负责除以 k0。
  */
 
-const { a, e2, ep2 } = WGS84;
 const K0 = UTM.K0;
 
 /**
@@ -29,26 +30,29 @@ const K0 = UTM.K0;
  * @param {number} xRel 相对中央经线的东坐标（米，= UTM东坐标 − 500000）
  * @param {number} yRel 相对赤道的北坐标（米，南半球为负，= 已去假北的北坐标）
  * @param {number} lon0Rad 中央经线经度（弧度）
+ * @param {object} [ell] ellipsoids.js 产出的椭球派生量；缺省 WGS84
  * @returns {{lat:number, lon:number}} 纬度、经度（弧度）
  */
-function unproject(xRel, yRel, lon0Rad) {
+function unproject(xRel, yRel, lon0Rad, ell = DEFAULT_ELLIPSOID) {
+  const { a, e2, ep2, meridian: { M1: m1 } } = ell;
+
   // ---- 式 (8-16)：还原归一化子午线弧长 μ ----
   const m = yRel / K0;            // 去掉 k0 缩放后的子午线弧长
-  const mu = m / (a * M1);
+  const mu = m / (a * m1);
 
   // ---- 式 (8-19)/(8-20)：底点纬度 φ1 ----
-  const phi1 = footpointLatitude(mu);
+  const phi1 = footpointLatitude(mu, ell);
 
   const sin1 = Math.sin(phi1);
   const cos1 = Math.cos(phi1);
   const tan1 = Math.tan(phi1);
 
   // ---- 式 (8-21)/(8-22)：底点辅助量 ----
-  const N1 = a / Math.sqrt(1 - e2 * sin1 * sin1);                 // 式 8-21
+  const N1 = a / Math.sqrt(1 - e2 * sin1 * sin1);                   // 式 8-21
   const T1 = tan1 * tan1;
   const C1 = ep2 * cos1 * cos1;
-  const R1 = (a * (1 - e2)) / Math.pow(1 - e2 * sin1 * sin1, 1.5); // 子午线曲率半径
-  const D = xRel / (N1 * K0);                                     // 式 8-22
+  const R1 = (a * (1 - e2)) / Math.pow(1 - e2 * sin1 * sin1, 1.5);  // 子午线曲率半径
+  const D = xRel / (N1 * K0);                                       // 式 8-22
 
   const D2 = D * D;
   const D3 = D2 * D;

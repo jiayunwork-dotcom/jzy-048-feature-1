@@ -1,6 +1,7 @@
 'use strict';
 
-const { WGS84, UTM } = require('./constants');
+const { UTM } = require('./constants');
+const { DEFAULT_ELLIPSOID } = require('./ellipsoids');
 const { meridianArc } = require('./meridian');
 
 /**
@@ -14,12 +15,16 @@ const { meridianArc } = require('./meridian');
  *
  * 角度一律使用弧度（见 angles.js，全服务仅在边界做一次度→弧度）。
  *
+ * 椭球几何量（a、e²、e'²、弧长系数）全部取自最后一个参数 ell
+ * （ellipsoids.js 的派生量对象），同一套 Krüger 级数对任意基准椭球成立；
+ * 缺省 ell 时使用 WGS84，且与参数化改造前逐位一致。
+ * UTM 层面的 k0 与假偏移不随椭球变化（见 constants.js / utm.js）。
+ *
  * 本模块返回“未加任何假偏移”的横轴墨卡托坐标：
  *   xRaw 以中央经线为零，yRaw 以赤道为零；
  *   假东 500000、南半球假北 10000000 由上层 utm.js 统一加。
  */
 
-const { a, e2, ep2 } = WGS84;
 const K0 = UTM.K0;
 
 /**
@@ -29,9 +34,11 @@ const K0 = UTM.K0;
  * @param {number} phi 纬度（弧度）
  * @param {number} lon 经度（弧度）
  * @param {number} lon0 中央经线经度（弧度）
+ * @param {object} [ell] ellipsoids.js 产出的椭球派生量；缺省 WGS84
  * @returns {{x:number,y:number,N:number,T:number,C:number,A:number,M:number}}
  */
-function projectGeometry(phi, lon, lon0) {
+function projectGeometry(phi, lon, lon0, ell = DEFAULT_ELLIPSOID) {
+  const { a, e2, ep2 } = ell;
   const cosPhi = Math.cos(phi);
   const sinPhi = Math.sin(phi);
   const tanPhi = Math.tan(phi);
@@ -40,7 +47,7 @@ function projectGeometry(phi, lon, lon0) {
   const T = tanPhi * tanPhi;                                   // tan²φ
   const C = ep2 * cosPhi * cosPhi;                             // e'²·cos²φ
   const A = cosPhi * (lon - lon0);                             // 圆量 A = cosφ·(λ−λ0)
-  const M = meridianArc(phi);                                  // 子午线弧长
+  const M = meridianArc(phi, ell);                             // 子午线弧长
 
   const A2 = A * A;
   const A3 = A2 * A;
@@ -69,14 +76,19 @@ function projectGeometry(phi, lon, lon0) {
 
 /**
  * 正算入口。
+ * @param {number} phi 纬度（弧度）
+ * @param {number} lon 经度（弧度）
+ * @param {number} lon0 中央经线经度（弧度）
+ * @param {object} [ell] ellipsoids.js 产出的椭球派生量；缺省 WGS84
  * @returns {{x:number,y:number,scale:number,convergence:number}}
  *   x：相对中央经线的东坐标（米，已乘 k0，未加假东）
  *   y：相对赤道的北坐标（米，已乘 k0，南半球为负、未加假北）
  *   scale：点比例因子
  *   convergence：子午线收敛角（弧度），真子午线相对格网北向东偏为正
  */
-function project(phi, lon, lon0) {
-  const g = projectGeometry(phi, lon, lon0);
+function project(phi, lon, lon0, ell = DEFAULT_ELLIPSOID) {
+  const { ep2 } = ell;
+  const g = projectGeometry(phi, lon, lon0, ell);
   const { T, C, A } = g;
 
   const A2 = A * A;
@@ -95,7 +107,7 @@ function project(phi, lon, lon0) {
     x: g.x * K0,
     y: g.y * K0,
     scale,
-    convergence: meridianConvergence(phi, lon, lon0),
+    convergence: meridianConvergence(phi, lon, lon0, ell),
   };
 }
 
@@ -106,8 +118,9 @@ function project(phi, lon, lon0) {
  * α = atan2(∂x/∂φ, ∂y/∂φ)（沿子午线方向，经度固定、纬度微扰）；
  * 本服务采用的收敛角是“真北 → 格网北”的有向角，东偏为正，
  * 故 γ = −α = atan2(−∂x/∂φ, ∂y/∂φ)。
- * 五点中心差分（O(h⁴)）直接对本文件同一套 projectGeometry 级数求导，
- * 因此收敛角与 x,y,k 严格同源，不可能和正算系数脱节。
+ * 五点中心差分（O(h⁴)）直接对本文件同一套 projectGeometry 级数（连同
+ * 调用方指定椭球的派生量）求导，因此收敛角与 x,y,k 严格同源，
+ * 不可能和正算系数脱节，也不可能复用别的椭球的结果。
  * h = 1e-6 弧度（约 0.001″）时截断误差约 1e-24 rad、
  * 舍入误差约 1e-10 rad，远高于 0.01″ 的实用精度。
  *
@@ -116,13 +129,13 @@ function project(phi, lon, lon0) {
  * 以西为负。中央经线以东（Δλ>0）γ>0，以西 γ<0；
  * 中央经线与赤道上恒为零，一阶近似 γ ≈ Δλ·sinφ。
  */
-function meridianConvergence(phi, lon, lon0) {
+function meridianConvergence(phi, lon, lon0, ell = DEFAULT_ELLIPSOID) {
   const h = 1e-6;
 
-  const p2 = projectGeometry(phi + h, lon, lon0);
-  const p1 = projectGeometry(phi + 2 * h, lon, lon0);
-  const pm1 = projectGeometry(phi - h, lon, lon0);
-  const pm2 = projectGeometry(phi - 2 * h, lon, lon0);
+  const p2 = projectGeometry(phi + h, lon, lon0, ell);
+  const p1 = projectGeometry(phi + 2 * h, lon, lon0, ell);
+  const pm1 = projectGeometry(phi - h, lon, lon0, ell);
+  const pm2 = projectGeometry(phi - 2 * h, lon, lon0, ell);
 
   // 五点公式: f'(φ)=(-f(φ+2h)+8f(φ+h)-8f(φ-h)+f(φ-2h))/(12h)
   const dX = (-p1.x + 8 * p2.x - 8 * pm1.x + pm2.x) / (12 * h) * K0;

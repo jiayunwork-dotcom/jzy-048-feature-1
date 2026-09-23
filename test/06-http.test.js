@@ -170,8 +170,91 @@ test('非法输入：缺字段 / 类型错 / 带号非法 / 坐标越界 各自�
   assert.equal(badLon.json().error.code, 'LON_OUT_OF_RANGE');
 });
 
-test('非法 JSON body → 400 结构化错误', async () => {
+test('多椭球：POST 正算按指定椭球返回，坐标与默认 WGS84 不同', async () => {
+  const payload = { lat: 47.3769, lon: 11.9234 };
+  const wgs = (await app.inject({
+    method: 'POST', url: '/api/v1/forward',
+    headers: { 'content-type': 'application/json' }, payload,
+  }).then((r) => r.json())).result;
+  const bes = (await app.inject({
+    method: 'POST', url: '/api/v1/forward',
+    headers: { 'content-type': 'application/json' },
+    payload: { ...payload, ellipsoid: 'BESSEL_1841' },
+  }).then((r) => r.json())).result;
+  assert.equal(bes.ellipsoid, 'BESSEL_1841');
+  assert.equal(bes.datum, 'BESSEL_1841');
+  assert.notEqual(bes.easting, wgs.easting);
+  assert.notEqual(bes.northing, wgs.northing);
+});
+
+test('多椭球：GET query 带 ellipsoid 与 POST 一致（别名/小写也接受）', async () => {
+  const get = await app.inject({
+    method: 'GET', url: '/api/v1/forward?lat=47.3769&lon=11.9234&ellipsoid=bessel',
+  });
+  assert.equal(get.statusCode, 200);
+  const r = get.json().result;
+  assert.equal(r.ellipsoid, 'BESSEL_1841');
+});
+
+test('多椭球：正反算同椭球在 HTTP 层往返闭合（三种新增椭球各一次）', async () => {
+  for (const id of ['GRS80', 'BESSEL_1841', 'CLARKE_1866']) {
+    const lat = -33.86, lon = 151.2;
+    const f = (await app.inject({
+      method: 'POST', url: '/api/v1/forward',
+      headers: { 'content-type': 'application/json' },
+      payload: { lat, lon, ellipsoid: id },
+    }).then((r) => r.json())).result;
+    const inv = await app.inject({
+      method: 'POST', url: '/api/v1/inverse',
+      headers: { 'content-type': 'application/json' },
+      payload: { zone: f.zone, easting: f.easting, northing: f.northing, hemisphere: 'S', ellipsoid: id },
+    });
+    assert.equal(inv.statusCode, 200);
+    const b = inv.json().result;
+    assert.ok(Math.abs(b.lat - lat) < 1e-7, `${id} HTTP 往返纬度`);
+    assert.ok(Math.abs(b.lon - lon) < 1e-7, `${id} HTTP 往返经度`);
+    assert.equal(b.ellipsoid, id);
+  }
+});
+
+test('多椭球：未收录标识 → 400 + INVALID_ELLIPSOID，且不悄悄退回 WGS84', async () => {
   const res = await app.inject({
+    method: 'POST', url: '/api/v1/forward',
+    headers: { 'content-type': 'application/json' },
+    payload: { lat: 1, lon: 1, ellipsoid: 'PULKOVO42' },
+  });
+  assert.equal(res.statusCode, 400);
+  const body = res.json();
+  assert.equal(body.error.code, 'INVALID_ELLIPSOID');
+  assert.deepEqual(body.error.details.supported, ['WGS84', 'GRS80', 'BESSEL_1841', 'CLARKE_1866']);
+
+  const inv = await app.inject({
+    method: 'POST', url: '/api/v1/inverse',
+    headers: { 'content-type': 'application/json' },
+    payload: { zone: 50, easting: 5e5, northing: 4e6, ellipsoid: 123 },
+  });
+  assert.equal(inv.statusCode, 400);
+  assert.equal(inv.json().error.code, 'INVALID_ELLIPSOID');
+});
+
+test('多椭球：分带查询刻意忽略 ellipsoid 字段（含非法值也不影响）', async () => {
+  const res = await app.inject({
+    method: 'POST', url: '/api/v1/zone',
+    headers: { 'content-type': 'application/json' },
+    payload: { lon: 0, ellipsoid: 'WHATEVER' },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json().result, { lon: 0, zone: 31, centralMeridian: 3 });
+});
+
+test('多椭球：GET / 根说明列出受支持椭球', async () => {
+  const res = await app.inject({ method: 'GET', url: '/' });
+  const body = res.json();
+  assert.equal(body.ellipsoids.default, 'WGS84');
+  assert.deepEqual(body.ellipsoids.supported, ['WGS84', 'GRS80', 'BESSEL_1841', 'CLARKE_1866']);
+});
+
+test('非法 JSON body → 400 结构化错误', async () => {  const res = await app.inject({
     method: 'POST', url: '/api/v1/forward',
     headers: { 'content-type': 'application/json' },
     payload: '{ not json',
@@ -187,24 +270,31 @@ test('未知路由 → 404', async () => {
 });
 
 test('并发：数百个混合换算请求彼此独立、结果不串扰（无状态纯函数）', async () => {
+  const ids = [undefined, 'WGS84', 'GRS80', 'BESSEL_1841', 'CLARKE_1866'];
   const requests = [];
   for (let i = 0; i < 300; i++) {
     const lat = -70 + (i % 150);
     const lon = -170 + ((i * 7) % 340);
+    const ell = ids[i % ids.length];
     requests.push(app.inject({
       method: 'POST', url: '/api/v1/forward',
       headers: { 'content-type': 'application/json' },
-      payload: { lat, lon },
+      payload: { lat, lon, ...(ell ? { ellipsoid: ell } : {}) },
     }).then(async (fres) => {
       const f = fres.json().result;
+      assert.equal(f.ellipsoid, ell ?? 'WGS84');
       const bres = await app.inject({
         method: 'POST', url: '/api/v1/inverse',
         headers: { 'content-type': 'application/json' },
-        payload: { zone: f.zone, easting: f.easting, northing: f.northing, hemisphere: f.hemisphere },
+        payload: {
+          zone: f.zone, easting: f.easting, northing: f.northing,
+          hemisphere: f.hemisphere, ...(ell ? { ellipsoid: ell } : {}),
+        },
       });
       const b = bres.json().result;
       assert.ok(Math.abs(b.lat - lat) < 1e-7, `并发点 ${i} 纬度串扰`);
       assert.ok(Math.abs(b.lon - lon) < 1e-7, `并发点 ${i} 经度串扰`);
+      assert.equal(b.ellipsoid, ell ?? 'WGS84');
     }));
   }
   await Promise.all(requests);

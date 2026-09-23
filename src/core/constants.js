@@ -1,23 +1,26 @@
 'use strict';
 
 /**
- * WGS84 椭球常数与 UTM 投影常数。
+ * UTM 投影层面的常数与投影适用范围。
+ *
+ * 椭球几何常数（WGS84 及其他基准椭球的 a、f 与 e²、e'² 等派生量）
+ * 已拆分到独立的 ellipsoids.js，按请求指定的椭球解析；
+ * 本文件只保留与椭球无关的 UTM 约定：中央经线比例因子、假偏移、
+ * 分带宽度与合法域。
+ *
+ * 为兼容既有引用（旧测试与内部模块按 `const { WGS84 } = require('./constants')`
+ * 取值），这里仍转出同一份冻结的 WGS84 派生量；它与 ellipsoids.js
+ * 中 resolveEllipsoid(undefined) 返回的是同一个对象。
+ *
  * 参考：USGS Professional Paper 1395, "Map Projections — A Working Manual"（Snyder, 1987）
  */
 
-// ---- WGS84 椭球（大地测量参数，单位：米）----
-const WGS84 = {
-  a: 6378137.0,            // 长半轴
-  f: 1 / 298.257223563,    // 扁率
-  // 下列量在模块加载时一次性推导，避免各处重复计算
-};
+const { ELLIPSOIDS } = require('./ellipsoids');
 
-WGS84.b = WGS84.a * (1 - WGS84.f);                 // 短半轴
-WGS84.e2 = WGS84.f * (2 - WGS84.f);                // 第一偏心率平方 e² = 2f − f²
-WGS84.ep2 = WGS84.e2 / (1 - WGS84.e2);             // 第二偏心率平方 e'² = e²/(1−e²)
-WGS84.e1 = (1 - Math.sqrt(1 - WGS84.e2)) / (1 + Math.sqrt(1 - WGS84.e2)); // 子午线弧长辅助量 e1
+// ---- WGS84 椭球派生量（定义与推导见 ellipsoids.js）----
+const WGS84 = ELLIPSOIDS.WGS84;
 
-// ---- UTM 投影常数 ----
+// ---- UTM 投影常数（不随椭球变化）----
 const UTM = {
   K0: 0.9996,              // 中央经线比例因子（钉死）
   FALSE_EASTING: 500000,   // 假东偏移（米）

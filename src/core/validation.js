@@ -1,6 +1,7 @@
 'use strict';
 
 const { UTM, LIMITS } = require('./constants');
+const { DEFAULT_ELLIPSOID } = require('./ellipsoids');
 const { meridianArc } = require('./meridian');
 const { degToRad } = require('./angles');
 const { ValidationError, ERROR_CODES } = require('./errors');
@@ -108,7 +109,9 @@ function validateHemisphere(hemisphere) {
 
 /**
  * 东坐标合理性检查（UTM 带内物理上约为 166km..834km，这里略放宽）。
- * 最终是否落在投影带内，由反算后的经纬度域校验兜底。
+ * 带宽几何只与“经差 6° + k0”有关，换椭球后带边缘东坐标仍落在 160–840 km
+ * 区间内，故粗检阈值不随椭球调整；最终是否落在投影带内，由反算后的
+ * 经纬度域校验（带号/坐标/椭球三者自洽性）兜底。
  */
 function validateEasting(easting) {
   assertFiniteNumber(easting, 'easting');
@@ -129,35 +132,44 @@ function validateEasting(easting) {
   return easting;
 }
 
-// 北坐标粗检范围按“投影域边界纬度对应的子午线弧长 × k0”确定。
-// 余量 2000 米用于容纳带边缘处级数高次项造成的南北向轻微伸缩
-// （粗检只是第一道闸；反算后 validateInverseResult 会做权威的经纬度域校验）。
-const NORTH_SPAN = UTM.K0 * meridianArc(degToRad(LIMITS.LAT_MAX)) + 2000;
-const SOUTH_SPAN = UTM.K0 * -meridianArc(degToRad(LIMITS.LAT_MIN)) + 2000;
+/**
+ * 北坐标粗检范围按“投影域边界纬度对应的子午线弧长 × k0”确定，
+ * 弧长随调用方指定椭球推导（ell），因此不同椭球各自取自身几何范围，
+ * 不会拿 WGS84 的范围去卡别的基准。余量 2000 米用于容纳带边缘处级数
+ * 高次项造成的南北向轻微伸缩（粗检只是第一道闸；反算后
+ * validateInverseResult 会做权威的经纬度域校验）。
+ * 默认 ell 为 WGS84 时，算式与改造前完全一致（逐位相同）。
+ */
+function northingSpans(ell = DEFAULT_ELLIPSOID) {
+  const northSpan = UTM.K0 * meridianArc(degToRad(LIMITS.LAT_MAX), ell) + 2000;
+  const southSpan = UTM.K0 * -meridianArc(degToRad(LIMITS.LAT_MIN), ell) + 2000;
+  return { northSpan, southSpan };
+}
 
 /**
  * 北坐标合理性检查。
  * 北半球（无假北偏移）：[0, 约933万米]
  * 南半球（已加 1000 万米假北偏移）：[1000万−约887万, 1000万] ≈ [113万, 1000万]
  */
-function validateNorthing(northing, hemisphere) {
+function validateNorthing(northing, hemisphere, ell = DEFAULT_ELLIPSOID) {
   assertFiniteNumber(northing, 'northing');
   const hemi = hemisphere === 'S' ? 'S' : 'N';
+  const { northSpan, southSpan } = northingSpans(ell);
   if (hemi === 'N') {
-    if (northing < 0 || northing > NORTH_SPAN) {
+    if (northing < 0 || northing > northSpan) {
       throw new ValidationError(
         ERROR_CODES.NORTHING_OUT_OF_RANGE,
-        `北半球北坐标 ${northing} 越界（合法范围约 [0, ${Math.round(NORTH_SPAN)}] 米）`,
-        { northing, hemisphere: 'N', min: 0, max: NORTH_SPAN }
+        `北半球北坐标 ${northing} 越界（${ell.id} 合法范围约 [0, ${Math.round(northSpan)}] 米）`,
+        { northing, hemisphere: 'N', min: 0, max: northSpan, ellipsoid: ell.id }
       );
     }
   } else {
-    const min = UTM.FALSE_NORTHING - SOUTH_SPAN;
+    const min = UTM.FALSE_NORTHING - southSpan;
     if (northing < min || northing > UTM.FALSE_NORTHING) {
       throw new ValidationError(
         ERROR_CODES.NORTHING_OUT_OF_RANGE,
-        `南半球北坐标 ${northing} 越界（合法范围约 [${Math.round(min)}, ${UTM.FALSE_NORTHING}] 米）`,
-        { northing, hemisphere: 'S', min, max: UTM.FALSE_NORTHING }
+        `南半球北坐标 ${northing} 越界（${ell.id} 合法范围约 [${Math.round(min)}, ${UTM.FALSE_NORTHING}] 米）`,
+        { northing, hemisphere: 'S', min, max: UTM.FALSE_NORTHING, ellipsoid: ell.id }
       );
     }
   }
@@ -185,7 +197,7 @@ function validateInverseResult(latDeg, lonDeg) {
   if (lonDeg < LIMITS.LON_MIN - TOL || lonDeg > LIMITS.LON_MAX + TOL) {
     throw new ValidationError(
       ERROR_CODES.INVERSE_OUT_OF_DOMAIN,
-      `反算经度 ${lonDeg.toFixed(6)} 超出 [-180, 180] 度，东坐标很可能跨带越界`,
+      `反算经度 ${lonDeg.toFixed(6)} 超出 [-180, 180] 度，东坐标很可能跨带越界（带号/平面坐标/椭球三者不自洽）`,
       { lon: lonDeg }
     );
   }
@@ -204,5 +216,6 @@ module.exports = {
   validateHemisphere,
   validateEasting,
   validateNorthing,
+  northingSpans,
   validateInverseResult,
 };

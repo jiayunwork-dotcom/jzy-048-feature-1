@@ -60,15 +60,20 @@ async function buildApp() {
 
   app.get('/', async () => ({
     service: 'wgs84-utm-service',
-    description: 'WGS84 通用横轴墨卡托（UTM）双向换算；级数出处 USGS PP 1395 (Snyder, 1987) Krüger 展开，k0=0.9996',
+    description: '多基准椭球通用横轴墨卡托（UTM）双向换算；默认 WGS84，级数出处 USGS PP 1395 (Snyder, 1987) Krüger 展开，k0=0.9996',
+    ellipsoids: {
+      default: 'WGS84',
+      supported: require('./core/ellipsoids').SUPPORTED_ELLIPSOID_IDS,
+      note: '正/反算请求可选字段 "ellipsoid" 按次指定椭球；分带查询与椭球无关',
+    },
     endpoints: {
       forward: {
         method: 'POST /api/v1/forward (或 GET)',
-        body: { lat: '纬度(度)', lon: '经度(度)', zone: '可选，强制带号 1..60' },
+        body: { lat: '纬度(度)', lon: '经度(度)', zone: '可选，强制带号 1..60', ellipsoid: "可选，WGS84|GRS80|BESSEL_1841|CLARKE_1866，缺省 WGS84" },
       },
       inverse: {
         method: 'POST /api/v1/inverse (或 GET)',
-        body: { zone: '带号', easting: '东坐标(米)', northing: '北坐标(米)', hemisphere: "'N'|'S'，缺省 N" },
+        body: { zone: '带号', easting: '东坐标(米)', northing: '北坐标(米)', hemisphere: "'N'|'S'，缺省 N", ellipsoid: "可选，须与正算同椭球" },
       },
       zone: {
         method: 'POST /api/v1/zone (或 GET /api/v1/zone?lon=)',
@@ -93,6 +98,9 @@ async function buildApp() {
     lat: num(request.query.lat),
     lon: num(request.query.lon),
     zone: num(request.query.zone),
+    ellipsoid: typeof request.query.ellipsoid === 'string'
+      ? request.query.ellipsoid
+      : undefined,
   }));
 
   // ---------- 反算 ----------
@@ -108,6 +116,9 @@ async function buildApp() {
     northing: num(request.query.northing),
     hemisphere: typeof request.query.hemisphere === 'string'
       ? request.query.hemisphere
+      : undefined,
+    ellipsoid: typeof request.query.ellipsoid === 'string'
+      ? request.query.ellipsoid
       : undefined,
   }));
 
