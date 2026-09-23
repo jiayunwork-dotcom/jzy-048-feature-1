@@ -1,7 +1,7 @@
 'use strict';
 
-const { WGS84, UTM } = require('./constants');
-const { meridianArc } = require('./meridian');
+const { UTM } = require('./constants');
+const { meridianArc, meridianCoefficients } = require('./meridian');
 
 /**
  * 横轴墨卡托投影 —— 正算（大地经纬度 → 平面坐标）。
@@ -12,6 +12,9 @@ const { meridianArc } = require('./meridian');
  *   - 点比例因子 k：公式 (8-15)
  * 级数保留到 A^6 项，在 6° 带边缘处截断误差远小于 1 毫米。
  *
+ * 椭球几何量（a、e²、e'²、e1、弧长系数）按次由调用方传入（见 ellipsoids.js），
+ * 本模块不内置任何具体椭球数值，同一套级数对所有椭球通用。
+ *
  * 角度一律使用弧度（见 angles.js，全服务仅在边界做一次度→弧度）。
  *
  * 本模块返回“未加任何假偏移”的横轴墨卡托坐标：
@@ -19,7 +22,6 @@ const { meridianArc } = require('./meridian');
  *   假东 500000、南半球假北 10000000 由上层 utm.js 统一加。
  */
 
-const { a, e2, ep2 } = WGS84;
 const K0 = UTM.K0;
 
 /**
@@ -29,9 +31,12 @@ const K0 = UTM.K0;
  * @param {number} phi 纬度（弧度）
  * @param {number} lon 经度（弧度）
  * @param {number} lon0 中央经线经度（弧度）
+ * @param {object} ell 椭球（含 a/e2/ep2 派生量）
+ * @param {object} [coef] 已现推的子午线弧长系数，避免差分收敛角重复推导
  * @returns {{x:number,y:number,N:number,T:number,C:number,A:number,M:number}}
  */
-function projectGeometry(phi, lon, lon0) {
+function projectGeometry(phi, lon, lon0, ell, coef = meridianCoefficients(ell)) {
+  const { a, e2, ep2 } = ell;
   const cosPhi = Math.cos(phi);
   const sinPhi = Math.sin(phi);
   const tanPhi = Math.tan(phi);
@@ -40,7 +45,7 @@ function projectGeometry(phi, lon, lon0) {
   const T = tanPhi * tanPhi;                                   // tan²φ
   const C = ep2 * cosPhi * cosPhi;                             // e'²·cos²φ
   const A = cosPhi * (lon - lon0);                             // 圆量 A = cosφ·(λ−λ0)
-  const M = meridianArc(phi);                                  // 子午线弧长
+  const M = meridianArcWithCoef(phi, a, coef);                 // 子午线弧长
 
   const A2 = A * A;
   const A3 = A2 * A;
@@ -67,16 +72,32 @@ function projectGeometry(phi, lon, lon0) {
   return { x, y, N, T, C, A, M };
 }
 
+/** 与 meridian.js 弧长公式同源：用已现推的 M1..M4 直接计算，避免重复推导 */
+function meridianArcWithCoef(phi, a, { M1, M2, M3, M4 }) {
+  return a * (
+    M1 * phi
+    - M2 * Math.sin(2 * phi)
+    + M3 * Math.sin(4 * phi)
+    - M4 * Math.sin(6 * phi)
+  );
+}
+
 /**
  * 正算入口。
+ * @param {number} phi 纬度（弧度）
+ * @param {number} lon 经度（弧度）
+ * @param {number} lon0 中央经线经度（弧度）
+ * @param {object} ell 椭球（含 a/e2/ep2 派生量）
  * @returns {{x:number,y:number,scale:number,convergence:number}}
  *   x：相对中央经线的东坐标（米，已乘 k0，未加假东）
  *   y：相对赤道的北坐标（米，已乘 k0，南半球为负、未加假北）
  *   scale：点比例因子
  *   convergence：子午线收敛角（弧度），真子午线相对格网北向东偏为正
  */
-function project(phi, lon, lon0) {
-  const g = projectGeometry(phi, lon, lon0);
+function project(phi, lon, lon0, ell) {
+  const coef = meridianCoefficients(ell);
+  const g = projectGeometry(phi, lon, lon0, ell, coef);
+  const { ep2 } = ell;
   const { T, C, A } = g;
 
   const A2 = A * A;
@@ -95,7 +116,7 @@ function project(phi, lon, lon0) {
     x: g.x * K0,
     y: g.y * K0,
     scale,
-    convergence: meridianConvergence(phi, lon, lon0),
+    convergence: meridianConvergence(phi, lon, lon0, ell, coef),
   };
 }
 
@@ -107,7 +128,8 @@ function project(phi, lon, lon0) {
  * 本服务采用的收敛角是“真北 → 格网北”的有向角，东偏为正，
  * 故 γ = −α = atan2(−∂x/∂φ, ∂y/∂φ)。
  * 五点中心差分（O(h⁴)）直接对本文件同一套 projectGeometry 级数求导，
- * 因此收敛角与 x,y,k 严格同源，不可能和正算系数脱节。
+ * 因此收敛角与 x,y,k 严格同源，不可能和正算系数脱节；差分所经级数
+ * 全部使用本次请求椭球的派生量，换椭球时收敛角随之改变。
  * h = 1e-6 弧度（约 0.001″）时截断误差约 1e-24 rad、
  * 舍入误差约 1e-10 rad，远高于 0.01″ 的实用精度。
  *
@@ -116,13 +138,13 @@ function project(phi, lon, lon0) {
  * 以西为负。中央经线以东（Δλ>0）γ>0，以西 γ<0；
  * 中央经线与赤道上恒为零，一阶近似 γ ≈ Δλ·sinφ。
  */
-function meridianConvergence(phi, lon, lon0) {
+function meridianConvergence(phi, lon, lon0, ell, coef) {
   const h = 1e-6;
 
-  const p2 = projectGeometry(phi + h, lon, lon0);
-  const p1 = projectGeometry(phi + 2 * h, lon, lon0);
-  const pm1 = projectGeometry(phi - h, lon, lon0);
-  const pm2 = projectGeometry(phi - 2 * h, lon, lon0);
+  const p2 = projectGeometry(phi + h, lon, lon0, ell, coef);
+  const p1 = projectGeometry(phi + 2 * h, lon, lon0, ell, coef);
+  const pm1 = projectGeometry(phi - h, lon, lon0, ell, coef);
+  const pm2 = projectGeometry(phi - 2 * h, lon, lon0, ell, coef);
 
   // 五点公式: f'(φ)=(-f(φ+2h)+8f(φ+h)-8f(φ-h)+f(φ-2h))/(12h)
   const dX = (-p1.x + 8 * p2.x - 8 * pm1.x + pm2.x) / (12 * h) * K0;
@@ -133,4 +155,4 @@ function meridianConvergence(phi, lon, lon0) {
   return Math.atan2(-dX, dY);
 }
 
-module.exports = { project, projectGeometry, K0 };
+module.exports = { project, projectGeometry, meridianConvergence, K0 };

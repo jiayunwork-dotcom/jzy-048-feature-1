@@ -1,23 +1,15 @@
 'use strict';
 
 /**
- * WGS84 椭球常数与 UTM 投影常数。
+ * UTM 投影层面的固定约定与合法域常量。
+ *
+ * 注意：椭球几何常数（长半轴、扁率及其派生量）不在本模块，
+ * 已拆到 ellipsoids.js，由调用方按次指定椭球、按需推导；
+ * 这里的 k0、假偏移、分带规则属于 UTM 投影约定，与椭球无关，保持钉死。
  * 参考：USGS Professional Paper 1395, "Map Projections — A Working Manual"（Snyder, 1987）
  */
 
-// ---- WGS84 椭球（大地测量参数，单位：米）----
-const WGS84 = {
-  a: 6378137.0,            // 长半轴
-  f: 1 / 298.257223563,    // 扁率
-  // 下列量在模块加载时一次性推导，避免各处重复计算
-};
-
-WGS84.b = WGS84.a * (1 - WGS84.f);                 // 短半轴
-WGS84.e2 = WGS84.f * (2 - WGS84.f);                // 第一偏心率平方 e² = 2f − f²
-WGS84.ep2 = WGS84.e2 / (1 - WGS84.e2);             // 第二偏心率平方 e'² = e²/(1−e²)
-WGS84.e1 = (1 - Math.sqrt(1 - WGS84.e2)) / (1 + Math.sqrt(1 - WGS84.e2)); // 子午线弧长辅助量 e1
-
-// ---- UTM 投影常数 ----
+// ---- UTM 投影常数（不随椭球变化）----
 const UTM = {
   K0: 0.9996,              // 中央经线比例因子（钉死）
   FALSE_EASTING: 500000,   // 假东偏移（米）
@@ -38,4 +30,4 @@ const LIMITS = {
   EASTING_MAX: 840000,
 };
 
-module.exports = { WGS84, UTM, LIMITS };
+module.exports = { UTM, LIMITS };

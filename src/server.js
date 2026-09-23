@@ -13,7 +13,8 @@ async function main() {
   const app = await buildApp();
   try {
     await app.listen({ port: PORT, host: HOST });
-    app.log.info(`WGS84 UTM 换算服务已启动: http://${HOST}:${PORT}`);
+    app.log.info('UTM 换算服务已启动（缺省 WGS84，支持按次指定椭球）: '
+      + `http://${HOST}:${PORT}`);
   } catch (err) {
     app.log.error(err);
     process.exit(1);

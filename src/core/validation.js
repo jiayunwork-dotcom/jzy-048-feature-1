@@ -5,6 +5,11 @@ const { meridianArc } = require('./meridian');
 const { degToRad } = require('./angles');
 const { ValidationError, ERROR_CODES } = require('./errors');
 const { isValidZone } = require('./zones');
+const {
+  DEFAULT_ELLIPSOID_ID,
+  ELLIPSOID_IDS,
+  canonicalEllipsoidId,
+} = require('./ellipsoids');
 
 /**
  * 输入校验（独立模块）。
@@ -39,6 +44,31 @@ function requireNumberField(obj, field) {
   assertPresent(obj, field);
   assertFiniteNumber(obj[field], field);
   return obj[field];
+}
+
+/**
+ * 可选椭球标识：缺省（undefined/null）→ 默认 WGS84（兼容老调用方）。
+ * 非字符串 → INVALID_TYPE；未收录标识 → UNKNOWN_ELLIPSOID（结构化错误，
+ * 绝不静默退回 WGS84）。返回规范标识，椭球派生量由调用方另行现推。
+ */
+function validateEllipsoidField(value) {
+  if (value === undefined || value === null) return DEFAULT_ELLIPSOID_ID;
+  if (typeof value !== 'string') {
+    throw new ValidationError(
+      ERROR_CODES.INVALID_TYPE,
+      `字段 "ellipsoid" 必须是字符串椭球标识，收到: ${JSON.stringify(value)}`,
+      { field: 'ellipsoid', received: value, supported: ELLIPSOID_IDS }
+    );
+  }
+  const id = canonicalEllipsoidId(value);
+  if (id === null) {
+    throw new ValidationError(
+      ERROR_CODES.UNKNOWN_ELLIPSOID,
+      `未收录的椭球标识 ${JSON.stringify(value)}；内置支持: ${ELLIPSOID_IDS.join(', ')}`,
+      { ellipsoid: value, supported: ELLIPSOID_IDS }
+    );
+  }
+  return id;
 }
 
 /** 纬度（度），UTM 合法域约为 [-80, 84] */
@@ -108,7 +138,8 @@ function validateHemisphere(hemisphere) {
 
 /**
  * 东坐标合理性检查（UTM 带内物理上约为 166km..834km，这里略放宽）。
- * 最终是否落在投影带内，由反算后的经纬度域校验兜底。
+ * 该范围是 UTM 带宽的几何约定，与椭球无关；最终是否落在投影带内，
+ * 由反算后的经纬度域校验兜底。
  */
 function validateEasting(easting) {
   assertFiniteNumber(easting, 'easting');
@@ -129,35 +160,43 @@ function validateEasting(easting) {
   return easting;
 }
 
-// 北坐标粗检范围按“投影域边界纬度对应的子午线弧长 × k0”确定。
-// 余量 2000 米用于容纳带边缘处级数高次项造成的南北向轻微伸缩
-// （粗检只是第一道闸；反算后 validateInverseResult 会做权威的经纬度域校验）。
-const NORTH_SPAN = UTM.K0 * meridianArc(degToRad(LIMITS.LAT_MAX)) + 2000;
-const SOUTH_SPAN = UTM.K0 * -meridianArc(degToRad(LIMITS.LAT_MIN)) + 2000;
+/**
+ * 北坐标粗检范围按“该椭球在投影域边界纬度的子午线弧长 × k0”现算。
+ * 不同椭球的子午线弧长不同，因此该范围随椭球走，不能用固定常量。
+ * 余量 2000 米用于容纳带边缘处级数高次项造成的南北向轻微伸缩
+ * （粗检只是第一道闸；反算后 validateInverseResult 会做权威的经纬度域校验）。
+ */
+function northingSpans(ell) {
+  return {
+    north: UTM.K0 * meridianArc(degToRad(LIMITS.LAT_MAX), ell) + 2000,
+    south: UTM.K0 * -meridianArc(degToRad(LIMITS.LAT_MIN), ell) + 2000,
+  };
+}
 
 /**
- * 北坐标合理性检查。
+ * 北坐标合理性检查（按本次请求椭球的弧长尺度判定）。
  * 北半球（无假北偏移）：[0, 约933万米]
  * 南半球（已加 1000 万米假北偏移）：[1000万−约887万, 1000万] ≈ [113万, 1000万]
  */
-function validateNorthing(northing, hemisphere) {
+function validateNorthing(northing, hemisphere, ell) {
   assertFiniteNumber(northing, 'northing');
   const hemi = hemisphere === 'S' ? 'S' : 'N';
+  const { north: northSpan, south: southSpan } = northingSpans(ell);
   if (hemi === 'N') {
-    if (northing < 0 || northing > NORTH_SPAN) {
+    if (northing < 0 || northing > northSpan) {
       throw new ValidationError(
         ERROR_CODES.NORTHING_OUT_OF_RANGE,
-        `北半球北坐标 ${northing} 越界（合法范围约 [0, ${Math.round(NORTH_SPAN)}] 米）`,
-        { northing, hemisphere: 'N', min: 0, max: NORTH_SPAN }
+        `北半球北坐标 ${northing} 越界（${ell.name} 椭球合法范围约 [0, ${Math.round(northSpan)}] 米）`,
+        { northing, hemisphere: 'N', min: 0, max: northSpan, ellipsoid: ell.id }
       );
     }
   } else {
-    const min = UTM.FALSE_NORTHING - SOUTH_SPAN;
+    const min = UTM.FALSE_NORTHING - southSpan;
     if (northing < min || northing > UTM.FALSE_NORTHING) {
       throw new ValidationError(
         ERROR_CODES.NORTHING_OUT_OF_RANGE,
-        `南半球北坐标 ${northing} 越界（合法范围约 [${Math.round(min)}, ${UTM.FALSE_NORTHING}] 米）`,
-        { northing, hemisphere: 'S', min, max: UTM.FALSE_NORTHING }
+        `南半球北坐标 ${northing} 越界（${ell.name} 椭球合法范围约 [${Math.round(min)}, ${UTM.FALSE_NORTHING}] 米）`,
+        { northing, hemisphere: 'S', min, max: UTM.FALSE_NORTHING, ellipsoid: ell.id }
       );
     }
   }
@@ -196,6 +235,7 @@ module.exports = {
   assertFiniteNumber,
   assertPresent,
   requireNumberField,
+  validateEllipsoidField,
   validateLatitude,
   validateLongitude,
   validateZone,
@@ -203,6 +243,7 @@ module.exports = {
   validateOptionalZone,
   validateHemisphere,
   validateEasting,
+  northingSpans,
   validateNorthing,
   validateInverseResult,
 };

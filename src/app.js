@@ -4,6 +4,7 @@ const Fastify = require('fastify');
 const utm = require('./core/utm');
 const { ValidationError } = require('./core/errors');
 const { radToDeg } = require('./core/angles');
+const { ELLIPSOID_IDS, DEFAULT_ELLIPSOID_ID } = require('./core/ellipsoids');
 
 /**
  * 构建 Fastify 应用（无状态纯换算服务）。
@@ -17,6 +18,9 @@ const { radToDeg } = require('./core/angles');
  *   GET  /api/v1/inverse               同上（query 形式）
  *   POST /api/v1/zone                  经度 → 带号/中央经线
  *   GET  /api/v1/zone?lon=             同上（query 形式）
+ *
+ * 正/反算均支持可选 body/query 字段 ellipsoid（按次指定椭球，缺省 WGS84）；
+ * 分带查询与椭球无关。
  *
  * 所有非法输入统一返回 400 + 结构化错误体 {error:{code,message,details}}。
  */
@@ -56,19 +60,30 @@ async function buildApp() {
     return Number.isNaN(n) ? value : n;
   }
 
+  // query 中的字符串字段（椭球标识）：空串视为缺省，其余原样交给校验模块
+  function str(value) {
+    if (typeof value !== 'string' || value.trim() === '') return undefined;
+    return value;
+  }
+
   app.get('/health', async () => ({ status: 'ok', service: 'wgs84-utm-service' }));
 
   app.get('/', async () => ({
     service: 'wgs84-utm-service',
-    description: 'WGS84 通用横轴墨卡托（UTM）双向换算；级数出处 USGS PP 1395 (Snyder, 1987) Krüger 展开，k0=0.9996',
+    description: '通用横轴墨卡托（UTM）双向换算；缺省 WGS84 椭球，正/反算支持按次指定椭球；级数出处 USGS PP 1395 (Snyder, 1987) Krüger 展开，k0=0.9996',
+    ellipsoids: {
+      supported: ELLIPSOID_IDS,
+      default: DEFAULT_ELLIPSOID_ID,
+      note: '正/反算请求可选字段 "ellipsoid"；缺省 WGS84 时与历史行为逐位一致。k0=0.9996、假东 500000、假北 10000000 等 UTM 约定不随椭球变化；分带查询与椭球无关',
+    },
     endpoints: {
       forward: {
         method: 'POST /api/v1/forward (或 GET)',
-        body: { lat: '纬度(度)', lon: '经度(度)', zone: '可选，强制带号 1..60' },
+        body: { lat: '纬度(度)', lon: '经度(度)', zone: '可选，强制带号 1..60', ellipsoid: `可选，椭球标识：${ELLIPSOID_IDS.join('|')}，缺省 ${DEFAULT_ELLIPSOID_ID}` },
       },
       inverse: {
         method: 'POST /api/v1/inverse (或 GET)',
-        body: { zone: '带号', easting: '东坐标(米)', northing: '北坐标(米)', hemisphere: "'N'|'S'，缺省 N" },
+        body: { zone: '带号', easting: '东坐标(米)', northing: '北坐标(米)', hemisphere: "'N'|'S'，缺省 N", ellipsoid: `可选，椭球标识：${ELLIPSOID_IDS.join('|')}，缺省 ${DEFAULT_ELLIPSOID_ID}` },
       },
       zone: {
         method: 'POST /api/v1/zone (或 GET /api/v1/zone?lon=)',
@@ -93,6 +108,7 @@ async function buildApp() {
     lat: num(request.query.lat),
     lon: num(request.query.lon),
     zone: num(request.query.zone),
+    ellipsoid: str(request.query.ellipsoid),
   }));
 
   // ---------- 反算 ----------
@@ -109,6 +125,7 @@ async function buildApp() {
     hemisphere: typeof request.query.hemisphere === 'string'
       ? request.query.hemisphere
       : undefined,
+    ellipsoid: str(request.query.ellipsoid),
   }));
 
   // ---------- 分带查询 ----------

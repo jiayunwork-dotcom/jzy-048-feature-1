@@ -92,8 +92,9 @@ test('往返闭合：强制带号（跨带）情形也必须互逆', () => {
   assert.equal(f.zoneForced, true);
   // 强制跨带结果会超出本带常规东坐标范围，反算层走内核直接验证互逆性
   const { unproject } = require('../src/core/tmInverse');
+  const { getEllipsoid } = require('../src/core/ellipsoids');
   const { degToRad, radToDeg } = require('../src/core/angles');
-  const b = unproject(f.easting - 500000, f.northing, degToRad(f.centralMeridian));
+  const b = unproject(f.easting - 500000, f.northing, degToRad(f.centralMeridian), getEllipsoid('WGS84'));
   assert.ok(Math.abs(radToDeg(b.lat) - 25) < ROUNDTRIP_DEG_TOL);
   assert.ok(Math.abs(radToDeg(b.lon) - 116) < ROUNDTRIP_DEG_TOL);
 

@@ -24,6 +24,7 @@ const ERROR_CODES = Object.freeze({
   INVALID_TYPE: 'INVALID_TYPE',                 // 字段类型不是有限数
   MISSING_FIELD: 'MISSING_FIELD',               // 必填字段缺失
   INVERSE_OUT_OF_DOMAIN: 'INVERSE_OUT_OF_DOMAIN', // 反算结果落在投影域外
+  UNKNOWN_ELLIPSOID: 'UNKNOWN_ELLIPSOID',       // 椭球标识未收录（不静默退回 WGS84）
 });
 
 module.exports = { ValidationError, ERROR_CODES };

@@ -1,7 +1,7 @@
 'use strict';
 
-const { WGS84, UTM } = require('./constants');
-const { meridianArc, footpointLatitude, M1 } = require('./meridian');
+const { UTM } = require('./constants');
+const { meridianCoefficients, footpointLatitude } = require('./meridian');
 
 /**
  * 横轴墨卡托投影 —— 反算（平面坐标 → 大地经纬度）。
@@ -15,13 +15,16 @@ const { meridianArc, footpointLatitude, M1 } = require('./meridian');
  *   式 (8-18)  反算经差，保留到 D^5
  *
  * 与 tmForward.js 的式 (8-13)/(8-14) 正算级数互为反函数，
- * 在 6° 带内互逆误差为亚毫米级（见 test/04-roundtrip.test.js）。
+ * 在 6° 带内互逆误差为亚毫米级（见 test/03-roundtrip.test.js）。
+ *
+ * 椭球几何量（a、e²、e'²、e1、弧长系数）按次由调用方传入（见 ellipsoids.js），
+ * 本模块不内置任何具体椭球数值；正算与反算必须使用同一个椭球对象，
+ * 否则往返闭合会立刻漂移。
  *
  * 角度一律使用弧度；输入为“去掉假偏移、除以 k0 之前的原始平面量”
  * 由本模块负责除以 k0。
  */
 
-const { a, e2, ep2 } = WGS84;
 const K0 = UTM.K0;
 
 /**
@@ -29,15 +32,19 @@ const K0 = UTM.K0;
  * @param {number} xRel 相对中央经线的东坐标（米，= UTM东坐标 − 500000）
  * @param {number} yRel 相对赤道的北坐标（米，南半球为负，= 已去假北的北坐标）
  * @param {number} lon0Rad 中央经线经度（弧度）
+ * @param {object} ell 椭球（含 a/e2/ep2/e1 派生量）
  * @returns {{lat:number, lon:number}} 纬度、经度（弧度）
  */
-function unproject(xRel, yRel, lon0Rad) {
+function unproject(xRel, yRel, lon0Rad, ell) {
+  const { a, e2, ep2, e1 } = ell;
+  const { M1 } = meridianCoefficients(ell);
+
   // ---- 式 (8-16)：还原归一化子午线弧长 μ ----
   const m = yRel / K0;            // 去掉 k0 缩放后的子午线弧长
   const mu = m / (a * M1);
 
   // ---- 式 (8-19)/(8-20)：底点纬度 φ1 ----
-  const phi1 = footpointLatitude(mu);
+  const phi1 = footpointLatitude(mu, { a, e2, e1 });
 
   const sin1 = Math.sin(phi1);
   const cos1 = Math.cos(phi1);
